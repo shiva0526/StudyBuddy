@@ -1,0 +1,301 @@
+Context:
+You have the updated repository at the project root (StudyBuddy-main). Implement a robust, demo-ready StudyBuddy app with the following features and quality fixes. Use existing files when present; modify or create files under backend/ and frontend/src/ as needed. Keep code style consistent and add concise inline comments explaining changes. Make changes incremental and runnable.
+
+Top-level goals:
+1. Ensure backend (FastAPI) is stable with logging, health check, and robust error handling.
+2. Implement llm_client with real OpenAI usage + deterministic mock fallback and embedding fallback (OpenAI → Cohere/local mock).
+3. Implement upload pipeline for PDFs/TXT/images (PDF extraction via PyMuPDF, optional OCR fallback).
+4. Implement chunking and embedding storage in Replit DB (compact, cost-aware).
+5. Implement RAG retrieval (top-k) using stored embeddings; fall back to naive keyword search when embeddings unavailable.
+6. Implement plan creation, session start (RAG-powered lesson), quiz generation & grading, revision pack generation, SR (SM-2) scheduling, run-due-reviews endpoint.
+7. Wire frontend pages (Plan.jsx, Upload.jsx, Session.jsx, QuizGame.jsx, RevisionHub.jsx, Dashboard.jsx) to backend endpoints, replace any CSV flows with manual topic entry, fix JSX/typos/imports.
+8. Add YouTube integration endpoint (search + transcript + transcript embedding) optional via YOUTUBE_API_KEY; gracefully degrade if key missing.
+9. Add acceptance tests and README updates.
+
+Detailed tasks (apply in sequence). After each step run the provided acceptance test.
+
+-------------------------------------------------------------------------------
+STEP 1 — Sanity & backend entry (if not already)
+Files: backend/main.py, requirements.txt, README.md
+
+- Ensure backend/main.py:
+  - Creates FastAPI app and configures CORS (allow-all for demo).
+  - Configures logging (basicConfig, INFO).
+  - Exposes GET /api/health → returns {"status": "ok"}.
+  - Has dependency-injected db client import points.
+  - Uses uvicorn run command recommended in README: `uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload`
+
+Acceptance test:
+- Run Repl backend and GET /api/health returns 200 and JSON.
+
+-------------------------------------------------------------------------------
+STEP 2 — LLM client with mock + retries + embedding fallback
+Files: backend/llm_client.py (create/overwrite)
+
+Implement llm_client.py with the following functions:
+
+- is_api_available() -> bool:
+  - Checks `os.environ.get("OPENAI_API_KEY")` non-empty. Return bool.
+
+- get_embedding(text: str) -> List[float]:
+  - If OpenAI available:
+    - Call OpenAI Embeddings with model default env `EMBED_MODEL` or "text-embedding-3-small".
+    - Retry up to 2 times with exponential backoff.
+    - Return Python list of floats.
+  - Else if COHERE_API_KEY available (optional fallback):
+    - Call Cohere embeddings (if you choose to implement) with retries.
+  - Else:
+    - Return deterministic mock vector: derive hash via hashlib.sha256, expand to desired dimension (configurable ENV EMB_DIM default 256) and normalize floats. Return as list.
+  - Ensure returned vector is JSON-serializable (list of floats).
+
+- generate_completion(prompt: str, mode: str="chat", structured: bool=False) -> Any:
+  - Modes: "chat", "plan", "quiz", "session", "grade", "revision".
+  - If OpenAI available:
+    - Use openai.ChatCompletion.create or recommended API version. Include retries.
+    - If `structured` True, attempt to parse JSON from response text using helper safe_json_from_text; if parsing fails, log warning and return fallback structured template.
+  - If OpenAI not available:
+    - Return deterministic mock objects for each mode:
+      - plan: {"plan_id":"plan-demo", "summary":"Demo 7-day plan", "next_session":{...}}
+      - session: {"summary":"Demo summary", "examples":[...], "practice_question":{...}, "citations":[]}
+      - quiz: {"quiz_id":"q-demo","questions":[...3 MCQs...]}
+      - grade: {"score": X, "max_score": Y, "feedback":"..."}
+      - revision: {"short_notes":[{"topic":"X","points":["p1","p2"]}], "flashcards":[{"question":"Q","answer":"A"}]}
+      - chat: "Demo reply: running in mock mode..."
+  - Log each call (mode, mock/real, timings).
+
+- Implement safe_json_from_text(text: str) -> Any:
+  - Extract JSON block from code fences or plain JSON string and return parsed object or None.
+
+- Provide __main__ block showing example calls for quick tests.
+
+Acceptance test:
+- Run in console:
+  python -c "from backend.llm_client import generate_completion, get_embedding; print(generate_completion('test', mode='plan', structured=True)); print(len(get_embedding('hello')))"
+- Should print mock plan JSON and embedding length integer when OPENAI_API_KEY is not set.
+
+-------------------------------------------------------------------------------
+STEP 3 — Database wrapper & small vector store in Replit DB
+Files: backend/db_client.py (create/modify)
+
+- Provide helper functions wrapping replit.db:
+  - set_key(key: str, value: Any)
+  - get_key(key: str) -> Any or None
+  - list_keys(prefix: str) -> List[str]
+  - store_embedding(resource_id, chunk_id, vector:list, metadata:dict) → write under key `embed:{resource_id}:{chunk_id}` storing {"vector": vector, "meta": metadata}
+  - retrieve_all_embeddings(username optional) → returns list of (key, vector, meta) (for small-scale demo)
+  - get_resource_chunks(resource_id) → return chunk metadata
+
+- Note: Keep embeddings dimension small by default (EMB_DIM config default 256) to reduce storage & cost.
+
+Acceptance test:
+- In console run a small script to store a mock embedding and retrieve it.
+
+-------------------------------------------------------------------------------
+STEP 4 — Extraction & chunking
+Files: backend/extract.py, backend/chunk.py
+
+extract.py:
+- Implement extract_text(path) supporting:
+  - PDFs via PyMuPDF (fitz): extract page text and concatenate with page breaks.
+  - .txt and .md: read text.
+  - Images: if pytesseract is available, run OCR; else raise or return an instructive error.
+- Return plain text.
+
+chunk.py:
+- Implement chunk_text(text, chunk_size_chars=1200, overlap=200) → returns list of dicts {id:int, start:int, end:int, text:str}
+- Trim whitespace and skip empty chunks.
+
+Acceptance test:
+- Call extract_text on sample PDF and chunk_text on result; chunks returned >0.
+
+-------------------------------------------------------------------------------
+STEP 5 — Upload pipeline endpoint
+Files: backend/main.py (add route), backend/upload_helpers if desired
+
+- Implement POST /api/upload_resource:
+  - Accept multipart form: username, type ('notes'|'past_paper'|'image'), file.
+  - Save file to uploads/<resource_id>_<filename>.
+  - Call extract_text; on failure for images return helpful error if OCR not configured.
+  - Chunk text, for each chunk call llm_client.get_embedding and db_client.store_embedding with metadata: {filename, resource_id, chunk_id, snippet: first 300 chars}
+  - Store resource metadata in DB `resource:{resource_id}` with uploader and indexed flag.
+  - Return {resource_id, filename, chunks_indexed: N, message: 'Indexed'}
+
+- Add GET /api/resources/{username} to list resources for the user.
+
+- Add static file serving for uploads under /uploads/ for preview.
+
+Acceptance test:
+- Upload a sample PDF via curl or frontend; response returns chunks_indexed > 0 and file present in uploads/.
+
+-------------------------------------------------------------------------------
+STEP 6 — RAG retrieval & session start
+Files: backend/rag.py, backend/main.py (session route)
+
+- Implement retrieve_top_k(query_vec, k=5):
+  - If embeddings exist in DB, compute cosine similarity and return top k entries with meta.
+  - If embeddings missing or quota exceeded, fallback to naive keyword match: search chunk texts containing topic keywords and return top matches.
+- Implement POST /api/session/start:
+  - Input: {username, session_id}
+  - Lookup session metadata (session:{username}:{session_id}) or derive from plan.
+  - Build query embedding for topic or question.
+  - Retrieve top-k chunks.
+  - Build prompt including top-k chunk snippets and call llm_client.generate_completion(mode='session', structured=True) to generate lesson: {summary, examples[], practice_question, citations}
+  - Return lesson JSON.
+
+Acceptance test:
+- POST /api/session/start returns structured lesson JSON. Works in mock mode without embeddings.
+
+-------------------------------------------------------------------------------
+STEP 7 — Plan generation endpoint
+Files: backend/main.py (create_plan route), backend/plan_generator.py
+
+- Implement POST /api/create_plan:
+  - Validate input JSON: must include username, subject, topics (non-empty list), exam_date (ISO date), prefs.
+  - Use llm_client.generate_completion(mode='plan', structured=True) to get plan JSON (or mock).
+  - If structured parsing fails, use a deterministic fallback plan generator locally:
+    - Compute days_until_exam, total_minutes, allocate sessions per heuristic described earlier, create sessions array with {id, topic, date, duration_min, objective}.
+  - Store plan in DB and return {plan_id, summary, next_session}.
+
+Acceptance test:
+- Submit create_plan with topics and get plan JSON back and DB key present.
+
+-------------------------------------------------------------------------------
+STEP 8 — Quiz generation & grading
+Files: backend/quiz.py, backend/main.py (generate_quiz, submit_quiz routes)
+
+- POST /api/generate_quiz {username, topic, num_questions, difficulty}:
+  - Call llm_client.generate_completion(mode='quiz', structured=True) to obtain quiz JSON (quiz_id, questions).
+  - Store quiz under quiz:{username}:{quiz_id}.
+
+- POST /api/submit_quiz {username, quiz_id, answers[]}:
+  - For MCQs, grade locally comparing answer_index.
+  - For short answers, call llm_client.generate_completion(mode='grade', structured=True) with model answer and student answer; parse returned score & feedback (mock if no API).
+  - Update progress:{username} with results and compute weak_topics.
+  - For incorrect items, create SR cards (sr:{username}:{card_id}) with SM-2 starter values.
+
+Return {score, feedback, weak_topics, xp_earned}.
+
+Acceptance test:
+- Generate 3-question quiz and submit; get grading JSON back in UI.
+
+-------------------------------------------------------------------------------
+STEP 9 — Spaced repetition (SM-2) & run-due-reviews
+Files: backend/scheduler.py, backend/main.py (/api/run_due_reviews)
+
+- Implement SM-2 update function: update_card(card, quality_score) following SM-2.
+- Implement POST /api/run_due_reviews {username}:
+  - Query sr:{username}:* keys and return cards with due_date <= today.
+  - Do not auto-mark reviewed; allow client to mark individual cards reviewed via another endpoint POST /api/sr/review {username, card_id, quality} which applies SM-2 update.
+
+Acceptance test:
+- After missing a question, SR card stored; running run_due_reviews returns due cards.
+
+-------------------------------------------------------------------------------
+STEP 10 — Revision pack generation
+Files: backend/revision.py, backend/main.py route
+
+- POST /api/generate_revision_pack {username, options}
+  - Aggregate weak topics and top chunks.
+  - Call llm_client.generate_completion(mode='revision', structured=True) to produce {short_notes, flashcards, mnemonics}.
+  - Store under revision_pack:{username}:{date}, write markdown to /exports/{username}_revision_{date}.md
+  - Return {revision_pack_id, download_url}
+
+Acceptance test:
+- Call endpoint; file appears under /exports and UI displays notes and flashcards (mock acceptable).
+
+-------------------------------------------------------------------------------
+STEP 11 — YouTube integration (optional but implement gracefully)
+Files: backend/videos.py, backend/main.py route /api/find_videos_for_topic
+
+- If YOUTUBE_API_KEY present:
+  - Use YouTube Data API search for query: "topic subject explain tutorial".
+  - Get top 3 video IDs; attempt to fetch transcripts via youtube-transcript-api.
+  - Chunk transcripts, embed transcript chunks (get_embedding) and compute similarity with topic vector; choose top video(s).
+  - Store video metadata in DB and attach to session resources.
+- If key missing: return suggested search queries strings only.
+
+Acceptance test:
+- With key set, endpoint returns top videos; without, returns suggested queries.
+
+-------------------------------------------------------------------------------
+STEP 12 — Frontend wiring & UI fixes
+Files: frontend/src/pages/Plan.jsx, Upload.jsx, Session.jsx, Dashboard.jsx, RevisionHub.jsx, components/QuizGame.jsx, Flashcards.jsx, ProgressBar.jsx, styles.css
+
+- Replace CSV flows with manual topic input in Plan.jsx:
+  - Single topic input + Add button
+  - Multi-line paste area
+  - Visual chips for topics; remove option
+  - Submit to /api/create_plan
+
+- Upload.jsx:
+  - Use multipart/form-data to call POST /api/upload_resource
+  - Show upload progress, indexing progress from server response
+  - Validate file types and size
+
+- Session.jsx:
+  - On mount POST /api/session/start and render lesson JSON (summary bullets, examples list, practice question).
+  - "Generate Quiz" button calls /api/generate_quiz and opens QuizGame with returned JSON.
+
+- QuizGame.jsx:
+  - Present MCQs & short answers UI, collect answers, POST /api/submit_quiz, show immediate feedback with correct answers and AI suggestion, show XP and confetti on good performance.
+
+- RevisionHub.jsx:
+  - Call /api/generate_revision_pack, display notes and flashcards flip UI, "Play" mode to run through cards and mark correct/incorrect; call /api/sr/review to update cards when user marks review.
+
+- Add global Notification/Toast component used by all pages for errors/success.
+
+- Fix all console errors, missing imports, and any broken JSX tags (`<butt`, etc.).
+
+Acceptance test:
+- Use UI flows: create plan, upload PDF, start session, generate quiz, take quiz, generate revision pack — UI should show expected content (mock acceptable).
+
+-------------------------------------------------------------------------------
+STEP 13 — Error handling, logging, and README updates
+- Add try/except around external calls; respond with HTTP 503 and {"error": "..."} on external failure.
+- Log all key events (uploads, plan creation, session starts, quiz generation, revisions).
+- Update README with:
+  - Run commands
+  - Required Replit Secrets: OPENAI_API_KEY (optional), YOUTUBE_API_KEY (optional), COHERE_API_KEY (optional)
+  - How to run in mock-mode (no keys)
+  - Demo checklist
+
+-------------------------------------------------------------------------------
+STEP 14 — Lightweight tests & smoke-run
+- Add a script `scripts/smoke_test.py` invoking core endpoints sequentially in mock-mode (no API keys required), printing results and exiting non-zero on failure.
+- Run `python scripts/smoke_test.py` and include output in the final message.
+
+-------------------------------------------------------------------------------
+Non-functional requirements & constraints
+- Keep embedding dimension low by default (EMB_DIM=256) to reduce storage & cost; make it configurable via env var EMB_DIM.
+- Use small top_k (3–5) for retrieval.
+- All mock outputs must be deterministic.
+- Keep code comments short and helpful.
+- Avoid blocking long-running tasks; for indexing heavy files, respond immediately with "indexing started" and provide an index status endpoint if full asynchronous indexing is not implemented. For the hackathon demo synchronous indexing is acceptable if it completes quickly for test PDFs.
+
+-------------------------------------------------------------------------------
+Acceptance checklist (end-to-end)
+1. Backend runs with `uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload`
+2. GET /api/health => {"status":"ok"}
+3. POST /api/create_plan with sample topics returns plan JSON, DB stores plan.
+4. POST /api/upload_resource with a small sample PDF returns chunks_indexed > 0 and saves file to uploads/.
+5. POST /api/session/start returns lesson JSON (mock OK).
+6. POST /api/generate_quiz returns structured quiz JSON.
+7. POST /api/submit_quiz returns score, feedback and creates SR cards for misses.
+8. POST /api/generate_revision_pack writes markdown to /exports/ and returns flashcards JSON.
+9. POST /api/run_due_reviews returns due SR cards.
+10. Frontend pages render without console errors and UI flows work (Plan → Upload → Session → Quiz → Revision).
+11. scripts/smoke_test.py runs and prints success summary.
+
+-------------------------------------------------------------------------------
+Execution & reporting instructions for the Agent:
+- Apply changes incrementally. After each major step (2,3,5,6,8,12) run the corresponding acceptance test and report results.
+- If any test fails, show console logs and the last 100 lines of backend stdout/stderr.
+- When everything passes, produce a final summary listing:
+  - Files changed (path + one-line description)
+  - End-to-end smoke_test output
+  - Any remaining TODOs or optional improvements (e.g., Always On scheduling, analytics charts).
+
+Security & secrets:
+- Never print actual secret values in logs or output. If uploading logs that mention secrets, redact them.
+
+If you understand, begin applying these changes and report step-by-step progress and test outputs. If any step errors, include the full traceback and I will provide targeted fixes.
