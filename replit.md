@@ -4,32 +4,36 @@
 StudyBuddy is a comprehensive web application that helps students create personalized study plans, learn with AI-powered tutoring, take adaptive quizzes, and prepare for exams with intelligent revision materials.
 
 ## Recent Changes (November 7, 2025)
+- **MAJOR**: Complete migration from in-memory storage to PostgreSQL for permanent data persistence
+- **SECURITY**: Added ownership validation to all user-specific data endpoints
 - Complete project implementation with FastAPI backend and React frontend
 - RAG (Retrieval Augmented Generation) pipeline for personalized learning
 - Quiz engine with AI grading and gamification (XP, levels)
 - Spaced repetition flashcard system using SM-2 algorithm
 - Revision pack generator with short notes and flashcards
 - YouTube video integration with transcript analysis
-- Full CRUD operations for study plans, resources, and quizzes
-- **NEW**: Enhanced LLM client with retry logic and structured output support
-- **NEW**: Fixed OpenAI API compatibility by pinning httpx to 0.27.2
-- **NEW**: Added health endpoint (/api/health) and comprehensive logging
-- **NEW**: OpenAI API key integrated and working for real AI responses
+- Full CRUD operations for study plans, resources, and quizzes with PostgreSQL
+- Enhanced LLM client with retry logic and structured output support
+- Fixed OpenAI API compatibility by pinning httpx to 0.27.2
+- Added health endpoint (/api/health) and comprehensive logging
+- OpenAI API key integrated and working for real AI responses
 
 ## Architecture
 
 ### Backend (Python + FastAPI)
 - **API Server**: FastAPI running on port 8000
-- **Database**: Replit DB (key-value store)
+- **Database**: PostgreSQL (permanent data persistence)
 - **AI Integration**: OpenAI GPT-4o-mini and text-embedding-3-small
 - **RAG Pipeline**: PDF extraction → chunking → embedding → vector retrieval
 - **Key Modules**:
-  - `main.py`: API endpoints and routing
+  - `main.py`: API endpoints and routing with ownership validation
+  - `db_client.py`: PostgreSQL client with comprehensive schema management
   - `llm_client.py`: OpenAI wrapper with mock mode fallback
-  - `embeddings.py`: Vector operations and similarity search
+  - `embeddings.py`: Vector operations, similarity search, and keyword fallback
   - `plan_generator.py`: Study schedule algorithm
   - `quiz.py`: Quiz generation and grading
-  - `spaced_repetition.py`: SM-2 flashcard algorithm
+  - `spaced_repetition.py`: SM-2 flashcard algorithm with PostgreSQL storage
+  - `revision.py`: Revision pack generation with markdown export
 
 ### Frontend (React + Vite)
 - **Dev Server**: Vite on port 5000 with proxy to backend
@@ -88,6 +92,20 @@ bash -c "python start_backend.py & cd frontend && npm run dev"
 - Backend API: http://localhost:8000
 - Frontend: http://localhost:5000 (webview)
 
+## Database Schema (PostgreSQL)
+Tables:
+- **users**: User profiles, XP, level, streak, preferences
+- **resources**: Uploaded study materials metadata
+- **chunks**: Text chunks from resources with position tracking
+- **embeddings**: Vector embeddings (1536-dim) for RAG retrieval
+- **plans**: Study plans with sessions and scheduling
+- **quizzes**: Generated quizzes with questions and answers
+- **progress**: User progress tracking, weak topics, history
+- **sr_cards**: Spaced repetition flashcards with SM-2 data
+- **revision_packs**: Generated revision materials with export paths
+
+All tables use proper foreign keys, constraints, and indices for data integrity.
+
 ## Mock Mode
 When OPENAI_API_KEY is not set:
 - Returns sample quiz questions
@@ -114,9 +132,11 @@ package.json     - Node dependencies (in frontend/)
 ## Development Notes
 - LSP diagnostics present but non-blocking (mostly type hints)
 - Frontend uses proxy for API calls (see vite.config.js)
-- Replit DB fallback to in-memory dict if unavailable
+- PostgreSQL database schema auto-initializes on startup
 - PDF extraction uses PyMuPDF (fitz)
 - Vector similarity uses NumPy for efficiency
+- All user-specific endpoints enforce ownership validation for security
+- **IMPORTANT**: New db_client getters must enforce username scoping at API layer
 
 ## Next Steps
 - Set OPENAI_API_KEY in Secrets for full AI functionality
