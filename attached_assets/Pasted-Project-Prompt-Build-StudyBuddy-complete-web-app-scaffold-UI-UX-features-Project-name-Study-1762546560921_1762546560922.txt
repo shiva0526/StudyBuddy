@@ -1,0 +1,449 @@
+Project Prompt — Build StudyBuddy (complete web app scaffold + UI/UX + features)
+Project name
+
+StudyBuddy — AI-powered study planner, RAG tutor, quiz game & revision pack
+
+One-line summary
+
+Build a single-repl web app where students upload syllabus/notes/past papers and an exam date; the app generates a personalized study plan, RAG-grounded lessons, adaptive gamified quizzes, spaced-repetition reviews, YouTube video suggestions, and an exam-day revision pack (short notes + flashcards).
+
+Requirements / Goals
+
+MVP must run in one Repl: backend (FastAPI), frontend (React or plain HTML/JS with Tailwind), Replit DB for persistence, local filesystem for uploads/exports.
+
+AI integration: OpenAI (LLM & Embeddings) — use OPENAI_API_KEY secret.
+
+YouTube integration (optional but included): use YOUTUBE_API_KEY secret and youtube-transcript-api for transcripts.
+
+File upload support: PDF/text (PyMuPDF), optional OCR for images.
+
+RAG pipeline: chunk → embed → store embeddings → retrieve top-k for answers & lesson generation.
+
+Adaptive quiz engine: generate MCQ + short-answer quizzes; immediate grading; game UI with XP & streaks.
+
+Spaced repetition: SM-2 flashcard scheduling and daily due reviews.
+
+Revision pack: generate exam-day short notes + flashcards from user content and quiz history.
+
+Polished UI/UX: TailwindCSS, responsive layout, session pane, upload manager, dashboard, progress analytics.
+
+Demo script: a short scenario that shows plan creation, upload & indexing, learning session, quiz, revision pack generation, and export.
+
+Tech stack & files to create
+
+Backend: Python + FastAPI (uvicorn)
+
+Frontend: React (Vite or Create React App) or single-page HTML + vanilla JS if simpler — prefer React for components.
+
+Database: Replit DB (key-value)
+
+AI: OpenAI API for LLM & embeddings (text-embedding-3-small or current)
+
+PDF: PyMuPDF (fitz)
+
+YouTube transcripts: youtube-transcript-api
+
+Scheduler: APScheduler (or schedule) — add a manual trigger endpoint for demos
+
+Styling: TailwindCSS
+
+Files:
+
+/backend
+  main.py
+  llm_client.py
+  db_client.py
+  extract.py
+  chunk.py
+  embeddings.py
+  rag.py
+  plan_generator.py
+  quiz.py
+  revision.py
+  videos.py
+  scheduler.py
+/frontend
+  src/
+    App.jsx
+    pages/Dashboard.jsx
+    pages/Plan.jsx
+    pages/Session.jsx
+    pages/Upload.jsx
+    pages/RevisionHub.jsx
+    components/ChatBox.jsx
+    components/QuizGame.jsx
+    components/Flashcards.jsx
+    components/ProgressBar.jsx
+    styles.css (Tailwind)
+requirements.txt
+README.md
+
+Replit Secrets (instructions)
+
+Tell the user to set the following in Replit Secrets before running:
+
+OPENAI_API_KEY — OpenAI API key
+
+YOUTUBE_API_KEY — (optional) Google Data API key for YouTube search
+
+Data models (Replit DB keys)
+
+Use simple JSON objects stored in Replit DB.
+
+user:{username} → {name, prefs: {daily_minutes, session_length, preferred_times}, xp, level, streak}
+
+plan:{username}:{plan_id} → {created_at, exam_date, sessions: [session_id], meta}
+
+session:{username}:{session_id} → {topic, objective, date, start_time, duration_min, status, resources: [resource_ids]}
+
+resource:{resource_id} → {filename, path, type, uploader, indexed}
+
+chunk:{resource_id}:{chunk_id} → {text, start, end}
+
+embed:{resource_id}:{chunk_id} → {vector: [...], metadata}
+
+quiz:{username}:{quiz_id} → {questions:[{id,type,stem,choices,answer_index}], results, score, date}
+
+progress:{username} → {completed_topics, weak_topics, history:[{date,action,result}]}
+
+sr:{username}:{card_id} → {front, back, easiness, interval, repetitions, due}
+
+revision_pack:{username}:{date} → {short_notes, flashcards, mnemonics}
+
+API endpoints (spec & behavior)
+
+Implement endpoints with clear input/output JSON.
+
+Authentication (simple)
+
+GET /api/user/{username} → create if not exists and return profile.
+
+Plan & scheduling
+
+POST /api/create_plan
+Body: {username, subject, topics:[...], exam_date, prefs}
+Behavior: calls plan_generator → returns {plan_id, summary, next_session} and stores plan.
+
+GET /api/plan/{username}/{plan_id} → returns plan object
+
+Upload & indexing
+
+POST /api/upload_resource (multipart)
+Form fields: username, type (notes|past_paper|image), file
+Behavior: save file, extract text, chunk, embed each chunk, store metadata; returns {resource_id, chunks_indexed}
+
+GET /api/resources/{username} → list of user resources
+
+RAG & Sessions
+
+POST /api/session/start
+Body: {username, session_id}
+Behavior: gather session topic, retrieve top-k chunks, optional video snippets; build lesson via LLM; returns {summary, examples, practice_question, videos, citations}
+
+POST /api/rag_query
+Body: {username, query, use_only_my_materials:false}
+Behavior: create embedding for query, retrieve top-k chunks from user's indexed data, call LLM with context; returns {answer, citations, used_chunks}
+
+Quizzes
+
+POST /api/generate_quiz
+Body: {username, topic, num_questions, difficulty}
+Behavior: LLM returns structured quiz JSON; saved to DB; returns {quiz_id, questions}
+
+POST /api/submit_quiz
+Body: {username, quiz_id, answers:[...]}
+Behavior: grade MCQ locally, for short answers call LLM grader; update progress & SR cards; return {score, feedback, weak_topics, xp_earned}
+
+Spaced repetition & reviews
+
+POST /api/run_due_reviews (manual demo trigger)
+Behavior: return due SR cards for user and optionally mark them pending; (if Always On, scheduler will call this daily)
+
+Revision pack
+
+POST /api/generate_revision_pack
+Body: {username, options:{max_flashcards, concise}}
+Behavior: aggregate notes + weak topics + past papers, call LLM to create short notes + flashcards + mnemonics; store and write markdown export; return {revision_pack_id, download_url}
+
+Videos
+
+POST /api/find_videos_for_topic
+Body: {username, topic}
+Behavior: YouTube search → transcript fetch → embed & score → return top videos + snippet timestamps
+
+Exports
+
+POST /api/export
+Body: {username, type: "plan"|"revision"|"transcript"} → writes file to /exports/ and returns download link.
+
+Progress & analytics
+
+GET /api/progress/{username} → returns aggregated progress & popularity metrics for dashboard.
+
+Frontend UI/UX (detailed design & behavior)
+Global style & layout
+
+Use TailwindCSS for quick styling. Responsive layout:
+
+Desktop: 2-column layout (main content + right-side tools/panel)
+
+Mobile: stack vertically
+
+Color palette: soft pastel primary, strong accent for CTA (green/teal), clear readable fonts, large buttons.
+
+Animations: micro-interactions (button presses), confetti on level-up, progress ring for quiz.
+
+Pages & components
+
+Dashboard (Landing)
+
+Top: Welcome (username), days until exam, progress bar, XP/level badge.
+
+Next session card (topic, start button, start time).
+
+Today’s schedule list (session cards with Start / Mark Done).
+
+Quick actions: Create Plan, Upload Resources, Generate Revision Pack.
+
+Bottom: Recent activity feed (last quizzes, uploads).
+
+Upload Page / Modal
+
+Drag & drop area with file type dropdown (notes/past_paper/image).
+
+On upload: show progress bar (upload → extraction → embedding → indexed).
+
+List of uploaded resources with index status, preview, delete, re-index.
+
+Plan / Calendar View
+
+Calendar/list of sessions by date. Each session card shows topic, objective, duration, status (pending/done).
+
+Action: Recompute Plan (reallocates time if user updates prefs).
+
+Session Page (core learning UI)
+
+Left (Main): Topic header (title, objective, estimated time), Summary (3 bullets), 1–2 worked examples, button “Ask about this” (opens ChatBox).
+
+Buttons: Generate Quiz, Mark Done, Save Notes, Pin Video.
+
+Right (Side): Video embed (top video), transcript snippets, resources list (uploaded notes/paper pages used), SR flashcards due.
+
+Inline practice widget: 1 quick MCQ with Start/Skip.
+
+Quiz Game Screen
+
+Full-screen modal with:
+
+Question card (stem, choices if MCQ).
+
+Timer optional (user-settable).
+
+Input box for short answers.
+
+Progress ring showing question number & XP earned.
+
+On answer: show immediate feedback overlay (correct answer + AI suggestion) with source links.
+
+End screen: score, accuracy, XP gained, weak topics, recommended next sessions, “Share result” optional.
+
+Revision Hub
+
+Shows generated revision packs: one-page short notes (collapsible by topic), flashcards grid with flip cards, mnemonics list.
+
+Buttons: “Play Flashcards” (game mode), “Download PDF”, “Send to Calendar” (schedule quick review).
+
+Chat / RAG Q&A
+
+Simple chat UI. Option toggles: Use my materials only / Use web + my materials.
+
+For each answer show citations: clickable snippet previews.
+
+Progress Page
+
+Charts: weekly XP, quiz accuracy over time, topic mastery radar.
+
+Weak topics list and recommended focus sessions.
+
+SR stats: cards due, average recall rate.
+
+Settings
+
+Set preferences, API keys (display instructions only — not raw), notification channels, exports.
+
+UI behaviors & micro-interactions
+
+Hover on a session card shows quick options (start, reschedule).
+
+Confetti and sound on level-up (configurable off).
+
+Smooth skeleton loaders when waiting for LLM calls.
+
+Error toasts for LLM/embedding failures with retry button.
+
+“Run Due Reviews” button for demo to simulate scheduled reminders.
+
+Plan generation algorithm (concise pseudocode)
+
+Use weights from past paper frequency, note length, and baseline difficulty.
+
+days = max(1, (exam_date - today).days)
+total_minutes = days * prefs.daily_minutes
+for topic in syllabus:
+  past_freq = analyze_past_papers(topic)
+  note_size = estimate_note_length(topic)
+  baseline = default_effort(topic)
+  raw_score = alpha*past_freq + beta*note_size + gamma*baseline
+minutes_alloc[topic] = round(total_minutes * raw_score / sum(raw_scores))
+sessions = ceil(minutes_alloc[topic]/prefs.session_length)
+assign sessions across days respecting preferred_times and interleaving
+insert SR reviews for due cards
+
+
+Use constants: alpha=3, beta=1, gamma=2 (tweakable).
+
+RAG pipeline details
+
+Extract text from uploaded PDF/TXT (PyMuPDF).
+
+Chunk text into ~1000 char chunks with 200 char overlap.
+
+Create embeddings (OpenAI embedding model) per chunk.
+
+Store vector as list in embed:{resource}:{chunk} key with metadata.
+
+For query: embed query, compute cosine similarity vs stored vectors (top-k), build prompt: include top-n chunks as context, instruct LLM to cite chunks.
+
+Cache retrieval results for repeated queries.
+
+Quiz generation & grading
+
+Generate MCQs using LLM with JSON structured output (question, choices, correct_index, explanation).
+
+Short answers: LLM also returns model answer and a grading rubric; use grader endpoint to score student answer.
+
+For MCQ, grade client-side; for short answer, call POST /api/grade_answer which uses LLM.
+
+After grading, update SR cards: questions answered incorrectly become SR cards (or flagged for review).
+
+Spaced Repetition (SM-2)
+
+Implement SM-2 update rules for each flashcard using fields: easiness, repetitions, interval, due_date. Trigger update after each review.
+
+Revision pack generation (prompt design)
+
+Gather: user weak topics, top chunks from notes/papers, recent quiz errors.
+
+Prompt LLM: generate concise bullet summaries per top topic (max 5 bullets), produce flashcards (question + concise answer), create 1-line mnemonics for tricky concepts. Output must be JSON.
+
+Save to DB and export as markdown.
+
+YouTube integration (flow)
+
+For each topic:
+
+Build search query: "topic subject explain tutorial"
+
+Call YouTube Data API search (top 5)
+
+For each candidate, fetch transcript via youtube-transcript-api
+
+Chunk transcript, embed chunks, compute similarity w/topic embedding and choose top video(s)
+
+Store video:{id} metadata and attach best videos to session resources
+
+Exports
+
+Generate markdown files for plan and revision packs, save to /exports/{username}_{type}.md and return download link.
+
+Demo script (60–90s)
+
+Open app; create user shiv.
+
+Enter subject: Calculus, exam date 2 weeks from now, daily minutes 90, session length 45.
+
+Click Create Plan — show generated plan saved to DB.
+
+Upload calculus_notes.pdf and past_papers.pdf — show indexing progress.
+
+Open Day 2 session for “Integration by Parts” — show summary + top YouTube video.
+
+Generate 5-question quiz (MCQ) — answer 2 questions; immediate feedback & XP animation.
+
+Click Generate Revision Pack — show short notes + 20 flashcards; play 30-second flashcard game.
+
+Export plan → show file in /exports/.
+
+Acceptance criteria (what to deliver in Repl)
+
+Repl runs and serves the frontend + backend.
+
+POST /api/upload_resource ingests a PDF, chunks & stores embeddings (mock embeddings ok if no key).
+
+POST /api/create_plan returns a valid JSON plan.
+
+POST /api/generate_quiz returns a structured quiz and POST /api/submit_quiz grades it.
+
+Revision pack endpoint produces JSON short notes + flashcards and writes a markdown file to /exports/.
+
+Frontend demonstrates dashboard, upload, session, quiz, and revision pack UIs (crude acceptable).
+
+README with setup steps (how to set secrets and run).
+
+Quality & UX notes for Replit AI
+
+Use clear code comments in generated files.
+
+Keep functions small and well-documented.
+
+Mock or stub LLM calls if OPENAI_API_KEY is not present, but include code paths for real calls when secret exists.
+
+Add helpful error messages and a simple logging mechanism.
+
+Keep embedding dimensionalities and top_k small in default code to reduce cost (configurable).
+
+Follow-up prompts to iterate (use after scaffold is generated)
+
+After the initial scaffold is created, use these prompts one-by-one to add features:
+
+Connect OpenAI
+"Edit backend/llm_client.py to call OpenAI ChatCompletion and Embeddings using OPENAI_API_KEY from environment. Add retry and error handling."
+
+Implement upload & extraction
+"Implement /api/upload_resource in main.py using extract.py (PyMuPDF). Chunk text and store chunk metadata in DB. Return number of chunks indexed."
+
+Add embeddings & vector store
+"Add embeddings.py with get_embedding(text) that calls OpenAI embeddings. Add vector_store.py to store vectors in Replit DB and retrieval function retrieve_top_k(query_vec, k=5)."
+
+Build RAG session endpoint
+"Implement /api/session/start to assemble top-k chunks for the session's topic, call the LLM to generate summary + examples, and return a structured JSON to the frontend."
+
+Frontend: Session UI & Chat
+"Create Session.jsx that calls /api/session/start and renders summary, examples, video iframe, and a ChatBox that calls /api/rag_query."
+
+Quiz engine
+"Implement /api/generate_quiz to ask the LLM for a JSON array of MCQs. Build QuizGame.jsx to display questions, handle answers, and call /api/submit_quiz to grade."
+
+Revision pack & flashcards
+"Implement /api/generate_revision_pack and a RevisionHub page showing short notes and Flashcards component with flip and quiz modes."
+
+Scheduler & Run Due Reviews
+"Add scheduler.py with an APScheduler job template and implement /api/run_due_reviews as a manual trigger."
+
+YouTube transcripts
+"Add videos.py to search YouTube, fetch transcripts, chunk & embed them, and attach best videos to a session."
+
+UI polish & Tailwind
+"Apply Tailwind classes to components, add progress ring, and confetti animation on level-up."
+
+Final note for Replit AI
+
+Generate the backend and frontend code, wire them together, and add README with exact run instructions:
+
+pip install -r requirements.txt
+
+Set OPENAI_API_KEY and YOUTUBE_API_KEY in Replit Secrets
+
+Click Run (or uvicorn backend.main:app --reload --port 3000)
+
+If any external key is missing, the app should still run with mocked LLM responses so the UI can be tested.
