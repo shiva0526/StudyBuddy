@@ -8,6 +8,13 @@ from datetime import datetime
 import os
 import uuid
 import shutil
+import logging
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 from backend.db_client import db_client
 from backend.llm_client import llm_client
@@ -83,6 +90,12 @@ class FindVideosRequest(BaseModel):
 async def root():
     return {"message": "StudyBuddy API", "status": "running"}
 
+@app.get("/api/health")
+async def health_check():
+    """Health check endpoint"""
+    logger.info("Health check requested")
+    return {"status": "ok"}
+
 @app.get("/api/user/{username}")
 async def get_or_create_user(username: str):
     """Get or create user profile"""
@@ -110,6 +123,7 @@ async def get_or_create_user(username: str):
 @app.post("/api/create_plan")
 async def create_plan(request: CreatePlanRequest):
     """Create personalized study plan"""
+    logger.info(f"Creating study plan for user: {request.username}, subject: {request.subject}")
     result = generate_plan(
         request.username,
         request.subject,
@@ -141,8 +155,10 @@ async def upload_resource(
     file: UploadFile = File(...)
 ):
     """Upload and index study resource"""
+    logger.info(f"Upload request from user: {username}")
     resource_id = str(uuid.uuid4())[:8]
-    file_ext = file.filename.split('.')[-1] if '.' in file.filename else 'txt'
+    filename = file.filename or "upload.txt"
+    file_ext = filename.split('.')[-1] if '.' in filename else 'txt'
     file_path = f"uploads/{resource_id}.{file_ext}"
     
     with open(file_path, "wb") as buffer:
@@ -195,6 +211,7 @@ async def get_resources(username: str):
 @app.post("/api/session/start")
 async def start_session(request: SessionStartRequest):
     """Start learning session with AI-generated content"""
+    logger.info(f"Starting session {request.session_id} for user: {request.username}")
     plan_keys = db_client.keys(f"plan:{request.username}:")
     session_data = None
     
@@ -263,6 +280,7 @@ async def query_rag(request: RAGQueryRequest):
 @app.post("/api/generate_quiz")
 async def create_quiz(request: GenerateQuizRequest):
     """Generate quiz using AI"""
+    logger.info(f"Generating quiz for user: {request.username}, topic: {request.topic}")
     quiz_data = generate_quiz(
         request.username,
         request.topic,
@@ -323,7 +341,8 @@ async def submit_quiz(request: SubmitQuizRequest):
 @app.post("/api/generate_revision_pack")
 async def create_revision_pack(request: GenerateRevisionPackRequest):
     """Generate exam revision pack"""
-    result = generate_revision_pack(request.username, request.options)
+    logger.info(f"Revision pack requested for user: {request.username}")
+    result = generate_revision_pack(request.username, request.options or {})
     return result
 
 @app.post("/api/find_videos_for_topic")
@@ -383,6 +402,9 @@ async def export_data(username: str, export_type: str):
             raise HTTPException(status_code=404, detail="No plans found")
         
         plan = db_client.get(plan_keys[0])
+        if not plan:
+            raise HTTPException(status_code=404, detail="Plan data not found")
+        
         filename = f"{username}_plan_{datetime.now().strftime('%Y%m%d')}.md"
         filepath = f"exports/{filename}"
         

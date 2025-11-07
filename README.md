@@ -174,6 +174,9 @@ This allows you to test the UI and workflow without API costs.
 ```bash
 python start_backend.py
 # API runs on http://localhost:8000
+
+# Or run directly with uvicorn:
+uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 ### Frontend Only
