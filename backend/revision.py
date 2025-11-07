@@ -8,7 +8,7 @@ from backend.embeddings import retrieve_top_k
 
 def generate_revision_pack(username: str, options: Dict = None) -> Dict:
     """
-    Generate exam revision pack with short notes and flashcards
+    Generate exam revision pack with short notes and flashcards using PostgreSQL
     Returns {revision_pack_id, short_notes, flashcards, mnemonics, download_url}
     """
     if options is None:
@@ -19,8 +19,8 @@ def generate_revision_pack(username: str, options: Dict = None) -> Dict:
     
     revision_id = str(uuid.uuid4())[:8]
     
-    progress_key = f"progress:{username}"
-    progress = db_client.get(progress_key) or {}
+    # Get progress from PostgreSQL
+    progress = db_client.get_progress(username)
     weak_topics = progress.get("weak_topics", [])
     
     all_topics = weak_topics[:5] if weak_topics else ["General Review"]
@@ -80,11 +80,13 @@ Focus on the most important concepts."""
         "mnemonics": mnemonics
     }
     
-    pack_key = f"revision_pack:{username}:{revision_id}"
-    db_client.set(pack_key, pack_data)
-    
+    # Generate markdown export
     markdown_content = generate_markdown_export(pack_data)
     file_path = f"exports/{username}_revision_{revision_id}.md"
+    
+    # Ensure exports directory exists
+    import os
+    os.makedirs("exports", exist_ok=True)
     
     try:
         with open(file_path, 'w', encoding='utf-8') as f:
@@ -93,6 +95,14 @@ Focus on the most important concepts."""
     except Exception as e:
         print(f"Error writing revision pack: {e}")
         download_url = None
+    
+    # Store in PostgreSQL
+    db_client.store_revision_pack(
+        pack_id=revision_id,
+        username=username,
+        content=pack_data,
+        file_path=file_path
+    )
     
     return {
         "revision_pack_id": revision_id,
