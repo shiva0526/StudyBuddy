@@ -4,15 +4,7 @@ python-multipart==0.0.6
 PyMuPDF==1.23.26
 numpy==1.26.3
 openai==1.10.0
+httpx==0.27.2
 youtube-transcript-api==0.6.2
 APScheduler==3.10.4
 python-dotenv==1.0.0
-APScheduler
-fastapi
-numpy
-openai
-PyMuPDF
-python-dotenv
-python-multipart
-uvicorn
-youtube-transcript-api

@@ -1,0 +1,78 @@
+Task: Add an LLM helper that supports real OpenAI calls (with retries) and deterministic mock responses when OPENAI_API_KEY is missing.
+
+Files to create/edit:
+- backend/llm_client.py
+
+Behavior & requirements:
+
+1. Provide a clear module-level docstring explaining purpose.
+
+2. Implement `is_api_available() -> bool`
+   - Return True if `os.environ.get("OPENAI_API_KEY")` is a non-empty string, else False.
+
+3. Implement `get_embedding(text: str) -> List[float]`
+   - If `is_api_available()` is True:
+     - Call OpenAI Embeddings API (use a safe default model name, e.g., "text-embedding-3-small" or configurable via env var).
+     - Use retry logic: try up to 2 retries with exponential backoff (e.g., 1s then 2s).
+     - Return a Python list of floats (embedding vector).
+   - If API key missing:
+     - Return a deterministic mock vector derived from a stable hash of `text`:
+       - Use Python's `hashlib.sha256(text.encode()).digest()` and convert bytes into floats normalized into a vector of length 1536 or a smaller dimension (256) for cheap storage. Implementation note: you may expand/hash repeatedly to reach desired dimension.
+     - Ensure the returned vector is a list of floats (not numpy arrays) so it's JSON-serializable if needed.
+
+4. Implement `generate_completion(prompt: str, mode: str="chat", structured: bool=False) -> Any`
+   - Parameters:
+     - `prompt`: The text to send to the LLM.
+     - `mode`: one of `"chat"`, `"plan"`, `"quiz"`, `"session"`, `"grade"`, `"revision"`.
+     - `structured`: if True, return JSON-parsable object expected by the caller (plan JSON, quiz JSON, etc.)
+   - Behavior when API key present:
+     - Use `openai.ChatCompletion.create` or `openai.Chat.create` depending on library (choose the standard ChatCompletion usage compatible with installed openai version). Wrap in retry logic (2 retries).
+     - If `structured` is True, attempt to extract JSON from LLM response; validate JSON with `json.loads` and return parsed object. If parsing fails, fall back to a robust template or return an error message explaining parse failure.
+   - Behavior when API key missing:
+     - Return deterministic mock responses depending on `mode`:
+       - `"plan"`: return a plan dict like:
+         ```
+         {
+           "plan_id": "plan-demo",
+           "summary": "Demo 7-day plan generated in mock mode",
+           "next_session": {"id":"s1","topic":"Intro","date":"2025-11-10","duration_min":45}
+         }
+         ```
+       - `"session"`: return:
+         ```
+         {
+           "summary":"Demo summary for topic X: key points A,B,C",
+           "examples":["Example 1", "Example 2"],
+           "practice_question":{"id":"q1","type":"mcq","stem":"Sample Q?","choices":["A","B","C","D"],"answer_index":1},
+           "citations":[]
+         }
+         ```
+       - `"quiz"`: return a list of 3 MCQs in the structured JSON format: `{quiz_id, questions: [{id,type,stem,choices,answer_index}]}`.
+       - `"grade"`: return a JSON like `{"score": 3, "max_score": 5, "feedback":"Demo feedback: close, remember to ..."}`
+       - `"revision"`: return `{ "short_notes":[{"topic":"X","points":["p1","p2"]}], "flashcards":[{"question":"Q","answer":"A"}] }`
+       - `"chat"`: return a short plain-text reply: `"Demo reply: I'm running in mock mode. Replace OPENAI_API_KEY to enable real responses."`
+     - All mock returns should be deterministic (not random) so tests are reproducible.
+   - Log each call (info-level) including mode, whether API used or mock, and latency.
+
+5. Add helper `safe_json_from_text(text: str) -> Any`
+   - Attempts to extract JSON embedded in LLM reply; handles fenced code blocks, stray text. If extraction fails, return `None`.
+
+6. Robustness:
+   - All functions should catch exceptions and return a clear JSON error or raise an appropriate exception handled by callers.
+   - Use `typing` annotations.
+   - Keep dependencies minimal (only standard libs + `openai`).
+
+7. Unit test helper:
+   - Add a small `if __name__ == "__main__":` block demonstrating `is_api_available()`, `get_embedding("hello")`, and `generate_completion("test plan", mode="plan", structured=True)` printing outputs — useful for quick manual tests in Replit console.
+
+Acceptance tests (manual steps to verify):
+1. With no `OPENAI_API_KEY` in Replit Secrets:
+   - In the Replit console run:
+     ```
+     python -c "from backend.llm_client import generate_completion, get_embedding; print(generate_completion('x', mode='plan', structured=True)); print(len(get_embedding('hello')))"
+     ```
+   - Expected: prints the mock plan JSON and an integer length for the embedding vector (e.g., 1536 or 256).
+2. Set an invalid key or real `OPENAI_API_KEY` and run a quick call (be cautious with credits) to ensure that real API path runs without syntax errors (mock fallback should still work if API calls fail).
+3. Confirm logs show whether mock or real API was used.
+
+Return: list the file `backend/llm_client.py` created/modified and show a short sample of the mock outputs that will be returned in demo mode.

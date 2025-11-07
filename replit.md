@@ -11,6 +11,10 @@ StudyBuddy is a comprehensive web application that helps students create persona
 - Revision pack generator with short notes and flashcards
 - YouTube video integration with transcript analysis
 - Full CRUD operations for study plans, resources, and quizzes
+- **NEW**: Enhanced LLM client with retry logic and structured output support
+- **NEW**: Fixed OpenAI API compatibility by pinning httpx to 0.27.2
+- **NEW**: Added health endpoint (/api/health) and comprehensive logging
+- **NEW**: OpenAI API key integrated and working for real AI responses
 
 ## Architecture
 
