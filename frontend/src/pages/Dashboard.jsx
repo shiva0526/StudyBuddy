@@ -51,6 +51,12 @@ export default function Dashboard({ username, user }) {
       })
       
       const data = await response.json()
+      
+      localStorage.setItem(`plan_${username}_${data.plan_id}`, JSON.stringify(data.plan))
+      const existingPlans = JSON.parse(localStorage.getItem(`plans_${username}`) || '[]')
+      existingPlans.push(data.plan)
+      localStorage.setItem(`plans_${username}`, JSON.stringify(existingPlans))
+      
       alert(`✓ ${data.summary}`)
       setShowCreatePlan(false)
       setFormData({ subject: '', topics: '', exam_date: '', daily_minutes: 60, session_length: 45 })
