@@ -3,7 +3,23 @@
 ## Project Overview
 StudyBuddy is a comprehensive web application that helps students create personalized study plans, learn with AI-powered tutoring, take adaptive quizzes, and prepare for exams with intelligent revision materials.
 
-## Recent Changes (November 7, 2025)
+## Recent Changes
+
+### November 8, 2025 - Integrated Create Plan Flow
+- **MAJOR FEATURE**: Complete redesign of Create Plan into single integrated workflow
+- Users can now add topics (typed OR CSV), attach files (notes/papers), and set preferences in ONE form
+- Backend automatically indexes all resources during plan creation (no separate upload step)
+- Auto-generates practice questions per topic using LLM with structured JSON output
+- Creates "Important Questions" list ranked by past-paper frequency + AI importance scoring
+- New PostgreSQL tables: plan_questions, plan_important_questions
+- New backend modules: topic_parser.py (CSV parsing), question_generator.py (LLM question generation)
+- Frontend: Completely rewritten Plan.jsx with unified form, drag-drop file upload, topic chips
+- Frontend: Updated Session.jsx to show generated practice questions per topic
+- Frontend: Important Questions modal with full list view
+- **SECURITY**: Fixed path traversal vulnerability with UUID-based filenames
+- All files sanitized using os.path.basename() + UUID naming scheme
+
+### November 7, 2025 - PostgreSQL Migration
 - **MAJOR**: Complete migration from in-memory storage to PostgreSQL for permanent data persistence
 - **SECURITY**: Added ownership validation to all user-specific data endpoints
 - Complete project implementation with FastAPI backend and React frontend
@@ -28,6 +44,8 @@ StudyBuddy is a comprehensive web application that helps students create persona
 - **Key Modules**:
   - `main.py`: API endpoints and routing with ownership validation
   - `db_client.py`: PostgreSQL client with comprehensive schema management
+  - `topic_parser.py`: CSV parsing and topic merging/deduplication
+  - `question_generator.py`: LLM-powered practice question generation and ranking
   - `llm_client.py`: OpenAI wrapper with mock mode fallback
   - `embeddings.py`: Vector operations, similarity search, and keyword fallback
   - `plan_generator.py`: Study schedule algorithm
@@ -47,11 +65,17 @@ StudyBuddy is a comprehensive web application that helps students create persona
   - RevisionHub: Generated study materials
 
 ### Data Flow
-1. User uploads PDF → Extracted → Chunked → Embedded → Stored in DB
-2. User creates plan → Topics analyzed → Sessions scheduled
-3. User starts session → RAG retrieval → LLM generates lesson → Videos found
-4. User takes quiz → LLM generates questions → Graded → XP earned → Weak topics tracked
-5. User generates revision pack → LLM creates notes/flashcards → Exportable
+1. **Integrated Plan Creation** (NEW):
+   - User enters subject, exam date, topics (typed/CSV), uploads files (notes/papers), sets preferences
+   - Backend saves files with UUID-based names, extracts text, chunks, embeds
+   - For each topic: retrieves relevant chunks, generates 5 practice questions using LLM
+   - Computes topic frequencies from past papers
+   - Generates ranked "Important Questions" list (top 10)
+   - Stores plan, questions, important questions in PostgreSQL
+   - Returns plan summary with Important Questions preview
+2. User starts session → RAG retrieval → LLM generates lesson → Videos found → Shows practice questions
+3. User takes quiz → LLM generates questions → Graded → XP earned → Weak topics tracked
+4. User generates revision pack → LLM creates notes/flashcards → Exportable
 
 ## Key Features Implementation
 
@@ -99,6 +123,8 @@ Tables:
 - **chunks**: Text chunks from resources with position tracking
 - **embeddings**: Vector embeddings (1536-dim) for RAG retrieval
 - **plans**: Study plans with sessions and scheduling
+- **plan_questions**: Generated practice questions per topic (NEW)
+- **plan_important_questions**: Ranked important questions for exam prep (NEW)
 - **quizzes**: Generated quizzes with questions and answers
 - **progress**: User progress tracking, weak topics, history
 - **sr_cards**: Spaced repetition flashcards with SM-2 data
