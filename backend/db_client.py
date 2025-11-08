@@ -161,6 +161,28 @@ class PostgreSQLClient:
                     )
                 """)
                 
+                # Plan questions table (generated practice questions per topic)
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS plan_questions (
+                        id SERIAL PRIMARY KEY,
+                        plan_id VARCHAR(255),
+                        topic VARCHAR(255),
+                        questions JSONB,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        UNIQUE(plan_id, topic)
+                    )
+                """)
+                
+                # Plan important questions table (top questions for exam prep)
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS plan_important_questions (
+                        id SERIAL PRIMARY KEY,
+                        plan_id VARCHAR(255) UNIQUE,
+                        questions JSONB,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                
                 logger.info("Database schema initialized")
     
     # User operations
@@ -422,6 +444,61 @@ class PostgreSQLClient:
                     INSERT INTO revision_packs (pack_id, username, content, file_path)
                     VALUES (%s, %s, %s, %s)
                 """, (pack_id, username, Json(content), file_path))
+    
+    # Plan questions operations
+    def store_plan_questions(self, plan_id: str, topic: str, questions: List[Dict]) -> None:
+        """Store generated questions for a specific topic in a plan"""
+        with self.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO plan_questions (plan_id, topic, questions)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (plan_id, topic) DO UPDATE SET questions = EXCLUDED.questions
+                """, (plan_id, topic, Json(questions)))
+    
+    def get_plan_questions(self, plan_id: str, topic: str = None) -> Dict[str, List[Dict]]:
+        """Get questions for a plan (optionally filtered by topic)"""
+        with self.get_connection() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                if topic:
+                    cur.execute(
+                        "SELECT topic, questions FROM plan_questions WHERE plan_id = %s AND topic = %s",
+                        (plan_id, topic)
+                    )
+                    row = cur.fetchone()
+                    if row:
+                        return {row['topic']: row['questions']}
+                    return {}
+                else:
+                    cur.execute(
+                        "SELECT topic, questions FROM plan_questions WHERE plan_id = %s",
+                        (plan_id,)
+                    )
+                    result = {}
+                    for row in cur.fetchall():
+                        result[row['topic']] = row['questions']
+                    return result
+    
+    def store_important_questions(self, plan_id: str, questions: List[Dict]) -> None:
+        """Store important questions for a plan"""
+        with self.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO plan_important_questions (plan_id, questions)
+                    VALUES (%s, %s)
+                    ON CONFLICT (plan_id) DO UPDATE SET questions = EXCLUDED.questions
+                """, (plan_id, Json(questions)))
+    
+    def get_important_questions(self, plan_id: str) -> List[Dict]:
+        """Get important questions for a plan"""
+        with self.get_connection() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(
+                    "SELECT questions FROM plan_important_questions WHERE plan_id = %s",
+                    (plan_id,)
+                )
+                row = cur.fetchone()
+                return row['questions'] if row else []
     
     # Legacy compatibility methods (for existing code)
     def get(self, key: str) -> Optional[Any]:

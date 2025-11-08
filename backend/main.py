@@ -27,6 +27,8 @@ from backend.quiz import generate_quiz, grade_quiz
 from backend.revision import generate_revision_pack
 from backend.videos import find_best_videos_for_topic
 from backend.spaced_repetition import get_due_cards, review_card, create_flashcard
+from backend.topic_parser import parse_topics_from_csv, parse_topics_from_text, merge_and_deduplicate_topics
+from backend.question_generator import generate_topic_questions, generate_important_questions, compute_topic_frequency
 
 app = FastAPI(title="StudyBuddy API")
 
@@ -116,31 +118,210 @@ async def get_or_create_user(username: str):
     return user
 
 @app.post("/api/create_plan")
-async def create_plan(request: CreatePlanRequest):
-    """Create personalized study plan using PostgreSQL"""
-    logger.info(f"Creating study plan for user: {request.username}, subject: {request.subject}")
+async def create_plan(
+    username: str = Form(...),
+    subject: str = Form(...),
+    exam_date: str = Form(...),
+    prefs: str = Form("{}"),
+    topics_text: str = Form(""),
+    topics_csv: Optional[UploadFile] = File(None),
+    files: List[UploadFile] = File(default=[])
+):
+    """
+    Create personalized study plan with integrated resource indexing and question generation.
+    Accepts multipart form-data with topics (typed or CSV) and resource files.
+    """
+    logger.info(f"Creating integrated plan for user: {username}, subject: {subject}")
+    
+    try:
+        # Parse preferences
+        import json
+        prefs_dict = json.loads(prefs) if prefs else {}
+    except:
+        prefs_dict = {}
+    
+    # Step 1: Parse and merge topics
+    typed_topics = parse_topics_from_text(topics_text) if topics_text else []
+    csv_topics = []
+    
+    if topics_csv:
+        try:
+            csv_content = await topics_csv.read()
+            csv_topics = parse_topics_from_csv(csv_content, topics_csv.filename)
+        except Exception as e:
+            logger.error(f"Error parsing CSV: {e}")
+            raise HTTPException(status_code=400, detail=f"Failed to parse CSV: {str(e)}")
+    
+    # Merge and deduplicate topics
+    final_topics = merge_and_deduplicate_topics(typed_topics, csv_topics)
+    
+    if not final_topics:
+        raise HTTPException(status_code=400, detail="No topics provided")
+    
+    logger.info(f"Final topics ({len(final_topics)}): {final_topics}")
+    
+    # Step 2: Create plan ID and initialize plan
+    plan_id = str(uuid.uuid4())
+    
+    # Step 3: Process uploaded files (notes and past papers)
+    resource_ids = []
+    resource_chunks = {}
+    
+    for file in files:
+        try:
+            # Generate resource ID
+            resource_id = str(uuid.uuid4())
+            
+            # SECURITY: Sanitize filename to prevent path traversal
+            # Use only the base filename (no path components)
+            import os
+            original_filename = os.path.basename(file.filename)
+            
+            # Additional safety: use UUID-based filename but keep extension
+            file_extension = os.path.splitext(original_filename)[1]
+            safe_filename = f"{resource_id}{file_extension}"
+            file_path = f"uploads/{safe_filename}"
+            
+            # Store original filename in metadata
+            filename = original_filename
+            
+            # Save file
+            with open(file_path, "wb") as f:
+                content = await file.read()
+                f.write(content)
+            
+            logger.info(f"Saved file: {filename} -> {file_path}")
+            
+            # Extract text
+            text = extract_text(file_path)
+            
+            if not text:
+                logger.warning(f"No text extracted from {filename}")
+                continue
+            
+            # Chunk text
+            chunks = chunk_text(text)
+            
+            # Store resource metadata
+            db_client.store_resource(
+                resource_id=resource_id,
+                filename=filename,
+                path=file_path,
+                type="note",  # Could be enhanced to detect type
+                uploader=username,
+                chunks=len(chunks)
+            )
+            
+            # Store chunks and embeddings
+            chunk_data = []
+            for i, chunk_text in enumerate(chunks):
+                chunk_id = f"chunk_{i}"
+                
+                # Store chunk
+                db_client.store_chunk(
+                    resource_id=resource_id,
+                    chunk_id=chunk_id,
+                    text=chunk_text,
+                    start_pos=i * 1000,
+                    end_pos=i * 1000 + len(chunk_text)
+                )
+                
+                # Store embedding
+                store_chunk_embedding(resource_id, chunk_id, chunk_text)
+                
+                chunk_data.append({
+                    'chunk_id': chunk_id,
+                    'text': chunk_text
+                })
+            
+            resource_chunks[resource_id] = chunk_data
+            resource_ids.append(resource_id)
+            
+            logger.info(f"Indexed {len(chunks)} chunks from {filename}")
+            
+        except Exception as e:
+            logger.error(f"Error processing file {file.filename}: {e}")
+            # Continue with other files
+    
+    # Step 4: Generate base study plan
     result = generate_plan(
-        request.username,
-        request.subject,
-        request.topics,
-        request.exam_date,
-        request.prefs
+        username,
+        subject,
+        final_topics,
+        exam_date,
+        prefs_dict
     )
     
-    # Store plan in PostgreSQL
+    # Use the generated plan_id
+    plan_id = result['plan_id']
+    
+    # Step 5: Generate practice questions for each topic
+    all_questions = {}
+    topic_frequencies = {}
+    
+    for topic in final_topics:
+        # Retrieve relevant chunks for this topic
+        try:
+            top_chunks = retrieve_top_k(topic, k=5)
+            context_chunks = [chunk['text'] for chunk in top_chunks]
+        except:
+            context_chunks = []
+        
+        # Generate questions for this topic
+        questions = generate_topic_questions(
+            llm_client,
+            topic,
+            context_chunks,
+            num_questions=prefs_dict.get('questions_per_topic', 5)
+        )
+        
+        all_questions[topic] = questions
+        
+        # Store questions in database
+        db_client.store_plan_questions(plan_id, topic, questions)
+        
+        # Compute topic frequency for important questions ranking
+        topic_frequencies[topic] = compute_topic_frequency(topic, resource_chunks)
+        
+        logger.info(f"Generated {len(questions)} questions for topic '{topic}'")
+    
+    # Step 6: Generate Important Questions list
+    important_questions = generate_important_questions(
+        llm_client,
+        final_topics,
+        all_questions,
+        topic_frequencies,
+        top_n=prefs_dict.get('important_questions_count', 10)
+    )
+    
+    # Store important questions
+    db_client.store_important_questions(plan_id, important_questions)
+    
+    # Step 7: Store plan in PostgreSQL
     db_client.store_plan(
-        plan_id=result['plan_id'],
-        username=request.username,
-        subject=request.subject,
-        exam_date=request.exam_date,
+        plan_id=plan_id,
+        username=username,
+        subject=subject,
+        exam_date=exam_date,
         plan_data=result['plan']
     )
     
-    return result
+    logger.info(f"Plan created successfully: {plan_id}")
+    
+    # Return response with preview
+    return {
+        'plan_id': plan_id,
+        'summary': result.get('summary', ''),
+        'next_session': result.get('next_session', {}),
+        'important_questions_preview': important_questions[:5],
+        'total_questions': sum(len(qs) for qs in all_questions.values()),
+        'resources_indexed': len(resource_ids),
+        'status': 'ready'
+    }
 
 @app.get("/api/plan/{username}/{plan_id}")
 async def get_plan(username: str, plan_id: str):
-    """Get study plan from PostgreSQL with ownership validation"""
+    """Get study plan from PostgreSQL with ownership validation, including questions"""
     plan_row = db_client.get_plan(plan_id)
     
     if not plan_row:
@@ -150,14 +331,58 @@ async def get_plan(username: str, plan_id: str):
     if plan_row.get('username') != username:
         raise HTTPException(status_code=403, detail="Unauthorized access to plan")
     
-    # Return the plan_data field which contains the full plan
+    # Get the plan_data field which contains the full plan
     plan = plan_row.get('plan_data', plan_row)
     
     # Convert datetime fields if present
     if 'created_at' in plan_row and plan_row['created_at']:
         plan['db_created_at'] = plan_row['created_at'].isoformat()
     
+    # Add questions and important questions
+    plan['questions'] = db_client.get_plan_questions(plan_id)
+    plan['important_questions'] = db_client.get_important_questions(plan_id)
+    
     return plan
+
+@app.get("/api/plan/{username}/{plan_id}/important_questions")
+async def get_plan_important_questions(username: str, plan_id: str):
+    """Get important questions for a plan"""
+    plan_row = db_client.get_plan(plan_id)
+    
+    if not plan_row:
+        raise HTTPException(status_code=404, detail="Plan not found")
+    
+    # SECURITY: Validate plan ownership
+    if plan_row.get('username') != username:
+        raise HTTPException(status_code=403, detail="Unauthorized access to plan")
+    
+    important_questions = db_client.get_important_questions(plan_id)
+    
+    return {
+        'plan_id': plan_id,
+        'important_questions': important_questions,
+        'count': len(important_questions)
+    }
+
+@app.get("/api/plan_status/{username}/{plan_id}")
+async def get_plan_status(username: str, plan_id: str):
+    """Get plan creation status (for async indexing support)"""
+    plan_row = db_client.get_plan(plan_id)
+    
+    if not plan_row:
+        raise HTTPException(status_code=404, detail="Plan not found")
+    
+    # SECURITY: Validate plan ownership
+    if plan_row.get('username') != username:
+        raise HTTPException(status_code=403, detail="Unauthorized access to plan")
+    
+    # For now, always return ready since we do synchronous indexing
+    # Could be enhanced for async indexing in the future
+    return {
+        'plan_id': plan_id,
+        'status': 'ready',
+        'message': 'Plan ready'
+    }
 
 @app.post("/api/upload_resource")
 async def upload_resource(

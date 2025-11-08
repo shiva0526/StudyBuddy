@@ -9,6 +9,8 @@ export default function Session({ username }) {
   const [loading, setLoading] = useState(true)
   const [showQuiz, setShowQuiz] = useState(false)
   const [showChat, setShowChat] = useState(false)
+  const [practiceQuestions, setPracticeQuestions] = useState([])
+  const [showPracticeQuestions, setShowPracticeQuestions] = useState(true)
 
   useEffect(() => {
     startSession()
@@ -23,10 +25,28 @@ export default function Session({ username }) {
       })
       const data = await response.json()
       setSessionData(data)
+      
+      if (data.plan_id && data.topic) {
+        fetchPracticeQuestions(data.plan_id, data.topic)
+      }
+      
       setLoading(false)
     } catch (error) {
       console.error('Error starting session:', error)
       setLoading(false)
+    }
+  }
+
+  const fetchPracticeQuestions = async (planId, topic) => {
+    try {
+      const response = await fetch(`/api/plan/${username}/${planId}`)
+      if (response.ok) {
+        const planData = await response.json()
+        const topicQuestions = planData.questions?.[topic] || []
+        setPracticeQuestions(topicQuestions)
+      }
+    } catch (error) {
+      console.error('Error fetching practice questions:', error)
     }
   }
 
@@ -53,6 +73,56 @@ export default function Session({ username }) {
               {sessionData?.lesson_content || 'No content available'}
             </div>
           </div>
+
+          {practiceQuestions.length > 0 && (
+            <div className="mt-6 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+              <div 
+                className="flex justify-between items-center cursor-pointer"
+                onClick={() => setShowPracticeQuestions(!showPracticeQuestions)}
+              >
+                <h3 className="text-lg font-semibold text-blue-900">
+                  🎯 Practice Questions (Generated)
+                </h3>
+                <span className="text-blue-700">{showPracticeQuestions ? '▼' : '▶'}</span>
+              </div>
+              
+              {showPracticeQuestions && (
+                <div className="mt-4 space-y-3">
+                  {practiceQuestions.map((q, idx) => (
+                    <div key={idx} className="bg-white p-4 rounded-lg shadow-sm">
+                      <div className="flex justify-between items-start">
+                        <div className="flex-1">
+                          <span className="text-xs font-semibold text-gray-500">
+                            {q.type === 'mcq' ? 'Multiple Choice' : 'Short Answer'}
+                          </span>
+                          <p className="font-medium mt-1">{q.stem}</p>
+                          {q.type === 'mcq' && q.choices && (
+                            <div className="mt-2 space-y-1 text-sm text-gray-600">
+                              {q.choices.map((choice, i) => (
+                                <div key={i}>• {choice}</div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                        <button 
+                          className="ml-4 btn-primary text-xs px-3 py-1"
+                          onClick={() => setShowQuiz(true)}
+                        >
+                          Practice
+                        </button>
+                      </div>
+                      {q.explanation && (
+                        <details className="mt-2">
+                          <summary className="text-xs text-gray-500 cursor-pointer">Show explanation</summary>
+                          <p className="text-sm text-gray-600 mt-1">{q.explanation}</p>
+                        </details>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
 
           <div className="mt-6 flex space-x-3">
             <button onClick={() => setShowQuiz(true)} className="btn-primary">

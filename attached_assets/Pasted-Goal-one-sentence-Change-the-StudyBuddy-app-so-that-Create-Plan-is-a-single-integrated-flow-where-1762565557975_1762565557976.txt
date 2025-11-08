@@ -1,0 +1,301 @@
+Goal (one sentence)
+
+Change the StudyBuddy app so that Create Plan is a single integrated flow where users can add topics (typed or CSV), attach notes and previous-year papers (PDF/TXT/images) in the same form; the backend must ingest and index all these resources together, generate the study plan, auto-structure practice questions, and produce a persistent Important Questions list surfaced in the Plan and Session UIs.
+
+Summary of required user-facing changes
+
+Replace the separate CSV import UI and the separate Notes/Papers upload pages with one Create Plan screen that contains:
+
+Subject (text)
+
+Exam Date (date)
+
+Topics: either typed (single add + chips) OR upload CSV (with header topic or newline list)
+
+Files: attach multiple files (notes, past papers). Allow .pdf, .txt, .md, .png/.jpg (OCR optional).
+
+Preferences: daily minutes, session length
+
+Submit button: Create Plan & Index Resources
+
+When the user submits the form:
+
+The backend must save files (uploads/) and create a resource:{resource_id} for each.
+
+The backend must parse CSV into topics (if CSV uploaded) and merge with typed topics.
+
+The backend must extract text from all attached files and index chunks + embeddings (or mock embeddings), and link these resources to the generated plan.
+
+The backend must analyze the combined content (topics + notes + past papers) to generate structured practice questions for each topic (MCQ + short-answer placeholders) and produce an Important Questions list (top N questions ranked by past-paper frequency + LLM recommendation).
+
+Save generated questions & Important Questions into DB under plan:{username}:{plan_id}:questions and plan:{username}:{plan_id}:important_questions.
+
+Update Plan view to show:
+
+Plan summary + schedule as before
+
+A new collapsible panel: Important Questions (list of questions with source citation and link to session to practice).
+
+For each session/topic, show structured practice questions (generated from plan creation) inside Session pane.
+
+Backend changes (detailed)
+1) Modify POST /api/create_plan to accept multipart form
+
+File(s) to edit: backend/main.py (create_plan route) and any helper modules used for create_plan.
+
+Behavior:
+
+Accept either JSON or multipart/form-data. If multipart/form-data, expect fields:
+
+username (string)
+
+subject (string)
+
+exam_date (YYYY-MM-DD)
+
+prefs (JSON string optional)
+
+topics_text (optional multiline text)
+
+file multiple allowed (Attach notes/papers)
+
+topics_csv (optional file). If both CSV and typed topics are present, merge them (typed topics take precedence / dedup).
+
+Parse topics_csv:
+
+Support CSV with header topic or a single-column CSV. Also accept newline-separated .txt.
+
+Convert to a list of topic strings: topics = ["Topic A", "Topic B", ...].
+
+Merge with typed topics_text and remove duplicates and empty strings.
+
+Processing pipeline after receiving topics & files:
+
+Create a new plan id: plan_id = uuid4().
+
+Store plan metadata in DB key plan:{username}:{plan_id} with status: indexing.
+
+For each uploaded file:
+
+Save to uploads/{plan_id}_{resource_filename}.
+
+Create DB key resource:{resource_id} with metadata {filename, uploader, plan_id, type, path, uploaded_at}.
+
+Extract text using extract_text() (PDF/TXT/MD) or OCR optionally for images (if OCR not configured, add ocr_required:true in metadata).
+
+Chunk text via existing chunker.
+
+For each chunk compute embedding (use llm_client.get_embedding() which supports mock fallback); store embed:{resource_id}:{chunk_id} with vector and meta.
+
+After indexing all resources, analyze past papers (if any) to compute topic frequency scores:
+
+For each question text in past papers (if they contain lists of questions), run a light classifier: match question to topic by keyword (simple heuristic) or compute semantic similarity between topic embedding and chunk embeddings and count hits.
+
+Produce topic_weight based on frequency.
+
+Generate structured practice questions:
+
+For each topic in plan, call llm_client.generate_completion(mode='quiz', structured=True) with a prompt that includes:
+
+Topic name
+
+Short context extracted from notes/papers (top-k chunks for that topic)
+
+Request: produce num_questions_per_topic (configurable pref, default 5) with structure: {id, type: "mcq"|"short", stem, choices[], answer_index, explanation}.
+
+Store those questions under plan:{username}:{plan_id}:questions keyed by topic.
+
+Create Important Questions list:
+
+Use combined signals (past-paper frequency, LLM importance ranking, user-specified flags) to select top N (default 10) highly exam-relevant questions across all topics.
+
+Each important question entry: {q_id, stem, topic, source: resource_id or "generated", importance_score, link_to_session_if_assigned}.
+
+Store under plan:{username}:{plan_id}:important_questions.
+
+Update plan status to ready and compute next_session as before.
+
+Return:
+
+JSON: {plan_id, summary, next_session, important_questions_preview: [first 5 entries]}
+
+Error handling:
+
+If indexing is heavy, return {plan_id, message: "Indexing started", status:"indexing"} and provide /api/plan_status/{plan_id} endpoint to check indexing progress. (Synchronous preferred for small PDFs in hackathon; async allowed but must return partial plan.)
+
+2) Add endpoints (if not present)
+
+GET /api/plan/{username}/{plan_id} — return full plan including questions and important_questions.
+
+GET /api/plan_status/{username}/{plan_id} — return indexing status and progress.
+
+GET /api/plan/{username}/{plan_id}/important_questions — return full list for UI consumption.
+
+Frontend changes (detailed)
+Files to edit:
+
+frontend/src/pages/Plan.jsx (or equivalent create-plan page)
+
+frontend/src/pages/Session.jsx (to show generated questions per session)
+
+frontend/src/components add ImportantQuestionsPanel.jsx component
+
+Remove or hide the old separate CSV import page and the old separate Notes/Papers upload page (or keep an Upload page but indicate files uploaded at plan creation are linked to plan).
+
+Plan.jsx UI behavior:
+
+Replace previous two-step UI with a single Create Plan form:
+
+Input: Subject, Exam Date, Preferences (daily_minutes, session_length)
+
+Topics:
+
+Text input + Add Topic button -> shows chips of topics
+
+Multiline paste area for multiple topics
+
+OR Upload CSV button (accept .csv or .txt) — on file selection parse on client to preview topics (but server will parse as authoritative).
+
+Files area:
+
+Drag/drop multi-file area; show list of files to be uploaded with type selector (notes | past_paper). Files uploaded via this form will be automatically attached to the new plan.
+
+Button: Create Plan & Index Resources
+
+On submit, multipart/form-data POST to /api/create_plan with topics fields and files.
+
+After server returns plan:
+
+Show Plan Summary as before + new panel Important Questions with preview (first 5). Provide button View All Important Questions that opens ImportantQuestionsPanel.
+
+Session.jsx changes:
+
+For session/topic, show the questions generated for that topic in a collapsible section labeled Practice Questions (Generated) with buttons:
+
+Start Quiz (uses existing quiz flow, but fetches questions from plan store rather than generating ad-hoc)
+
+Mark as practiced
+
+Link to source materials (notes/papers snippet)
+
+ImportantQuestionsPanel.jsx:
+
+Display list with columns: Topic, Question stem (short), Importance score (visual badge), Source (click to preview), Practice button (start a quick quiz for that question), Save to Flashcards button.
+
+Allow export (copy to clipboard or download CSV/MD) of the important questions list.
+
+Prompt & LLM guidance (exact prompt wording backend will use)
+
+When calling llm_client.generate_completion(mode='quiz', structured=True) for a given topic, use a prompt template like:
+
+You are StudyBuddy, an expert exam tutor. Given the topic name, and the following context snippets from the student's notes and past papers (provide up to 3 short relevant snippets), generate 5 practice questions for the topic:
+- For each question output a JSON object with fields:
+  {
+    "id": "<unique id>",
+    "type": "mcq" | "short",
+    "stem": "Question text",
+    "choices": ["A","B","C","D"]   // only for mcq
+    "answer_index": 1,             // only for mcq
+    "model_answer": "full answer",
+    "explanation": "short explanation"
+  }
+Return the entire payload as valid JSON: {"topic":"...","questions":[...]}
+
+
+When generating Important Questions list (global ranking), use prompt:
+
+You are StudyBuddy. Using the combined input: topics list, top-k snippets from past papers, and notes, return a JSON array of the top 10 "Important Questions" students should practice before the exam. For each item return: { "q_id": "...", "topic":"...", "stem":"...", "importance_score":0.0, "reason":"<one-line justification>", "source":"resource_id or generated" }.
+
+DB / storage mapping
+
+plan:{username}:{plan_id} → base plan metadata (status, subject, exam_date, sessions, prefs)
+
+resource:{resource_id} → {filename, path, uploader, plan_id, type}
+
+embed:{resource_id}:{chunk_id} → stored vectors + snippet
+
+plan:{username}:{plan_id}:questions → {topic: [...questions...]} (or store as questions:{plan_id}:{topic}:{q_id})
+
+plan:{username}:{plan_id}:important_questions → list of important question objects
+
+Acceptance tests (manual steps)
+
+UI Create Plan
+
+Open Create Plan page.
+
+Type two topics and/or upload CSV containing topics.
+
+Attach two files (one notes.pdf and one past_papers.pdf).
+
+Click Create Plan & Index Resources.
+
+Expect: server response with {plan_id, status:"ready", important_questions_preview:[...]}
+
+UI shows plan summary and preview of Important Questions.
+
+Verify resources linked
+
+GET /api/plan/{username}/{plan_id} returns:
+
+resources list with file metadata
+
+questions object keyed by topic
+
+important_questions list contains top questions
+
+Session questions
+
+Open Session for a given topic.
+
+See Practice Questions (Generated) panel with the questions generated at plan creation.
+
+Click a question's Practice button → starts quiz session for that question and records result.
+
+Important Questions panel
+
+Click View All Important Questions
+
+See full list (10 items) with topic, stem, importance score, and source; practice any question.
+
+Database check
+
+In Replit DB, confirm keys:
+
+plan:{username}:{plan_id}, resource:{resource_id}, embed:{...}, plan:{username}:{plan_id}:questions, plan:{username}:{plan_id}:important_questions.
+
+Mock & fallback
+
+If OPENAI_API_KEY or embedding quota is unavailable, plan creation must still succeed using mock question generation and store them; UI should clearly indicate mock/generated mode (e.g., badge "Demo Mode: AI responses are mock").
+
+Implementation notes & constraints (for the agent)
+
+Reuse existing extraction, chunking, embedding code where possible (backend/extract.py, chunk.py, embeddings). If embeddings are unavailable due to quota, still store chunk text and use keyword-based assignment of questions to topic.
+
+Keep chunking and top-k sizes configurable (ENV vars).
+
+For simplicity, synchronous indexing is acceptable if it completes within a few seconds for small files. If files are large, the backend may return status: indexing and kick off background indexing (but UI must poll /api/plan_status).
+
+Make LLM prompts explicit and request JSON output to make parsing robust. Add safe JSON extraction helper.
+
+Add server-side deduplication of topics (case-insensitive trim).
+
+Add user feedback in UI: show "Indexing resources..." spinner and progress / toast messages.
+
+Do not expose raw secret values in logs.
+
+Deliverables & final report (what the agent will return)
+
+When done, the Agent should report:
+
+Files changed (list of paths + short one-line description).
+
+Example API response for POST /api/create_plan (with plan_id and preview).
+
+Example stored DB keys for a sample plan.
+
+Steps to reproduce the acceptance tests and screenshots or sample responses if possible.
+
+Any remaining TODOs or recommended improvements.
+
+If you understand, apply these changes now and report step-by-step. If any step fails, include the backend log traceback and the last 200 lines of console output so I can help debug.
